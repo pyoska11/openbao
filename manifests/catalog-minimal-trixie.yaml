@@ -1,0 +1,15 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: ClusterImageCatalog
+metadata:
+  name: postgresql-minimal-trixie
+  labels:
+    images.cnpg.io/family: postgresql
+    images.cnpg.io/os: trixie
+    images.cnpg.io/publisher: cnpg.io
+    images.cnpg.io/type: minimal
+spec:
+  # Keep the PostgreSQL major version selected by the Cluster manifest,
+  # while pinning this local demonstration to a reproducible image digest.
+  images:
+    - major: 18
+      image: ghcr.io/cloudnative-pg/postgresql:18.6-202608310817-minimal-trixie@sha256:5c389b0268d9e637ca55efa41a7fafa3996332b5ea3c6099d0861c5f31acb00e

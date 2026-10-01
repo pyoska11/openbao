@@ -1,0 +1,61 @@
+global:
+  # Enable the server chart components used by this recipe.
+  enabled: true
+server:
+  # OpenBao state is stored in CNPG PostgreSQL; a local PVC would create a
+  # second persistence layer and would not be the source of truth here.
+  dataStorage:
+    enabled: false
+  ha:
+    # PostgreSQL provides shared storage and the HA lock table for these
+    # replicas. Each pod still has to be unsealed independently.
+    enabled: true
+    replicas: 3
+    config: |
+      # Enable the UI for the local demonstration. Production access should
+      # be protected by TLS and an authenticated ingress.
+      ui = true
+      listener "tcp" {
+        # HTTP is intentionally used only for the local Kind lab.
+        tls_disable = 1
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+      }
+      storage "postgresql" {
+        # CNPG's RW service routes to the current PostgreSQL primary.
+        # sslmode=verify-full and the mounted certificates provide mTLS.
+        connection_url = "postgres://openbao-rw@openbao-db-rw:5432/openbao?sslmode=verify-full&sslcert=/etc/openbao/certs/tls.crt&sslkey=/etc/openbao/certs/tls.key&sslrootcert=/etc/openbao/ca/ca.crt"
+        # These names must match the tables created by schema-init-job.yaml.
+        table = "openbao_kv_store"
+        ha_table = "openbao_ha_locks"
+        ha_enabled = "true"
+        # The restricted runtime role has no CREATE privilege; schema creation
+        # is intentionally performed once by the separate schema-init Job.
+        skip_create_table = "true"
+      }
+  volumes:
+    - name: cnpg-client-cert
+      secret:
+        # DatabaseRole role-openbao-rw supplies the certificate used by the
+        # OpenBao runtime role, not the schema owner certificate.
+        secretName: role-openbao-rw-client-cert
+        defaultMode: 0640
+    - name: cnpg-client-ca
+      secret:
+        # CNPG's CA is mounted separately so libpq can verify the server.
+        secretName: openbao-db-ca
+        defaultMode: 0640
+  volumeMounts:
+    - name: cnpg-client-cert
+      mountPath: /etc/openbao/certs
+      readOnly: true
+    - name: cnpg-client-ca
+      mountPath: /etc/openbao/ca
+      readOnly: true
+  tolerations:
+    # The local topology has only two general-purpose nodes but OpenBao has
+    # three replicas. This lets the third replica use the control-plane node
+    # in Kind; do not copy this toleration to production.
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule

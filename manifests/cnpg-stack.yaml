@@ -1,0 +1,91 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: openbao-db
+spec:
+  # Three PostgreSQL instances for OpenBao storage and HA.
+  instances: 3
+
+  # Use the PostgreSQL image registered in the image catalog.
+  imageCatalogRef:
+    apiGroup: postgresql.cnpg.io
+    kind: ClusterImageCatalog
+    name: postgresql-minimal-trixie
+    major: 18
+  affinity:
+    # Run PostgreSQL on the nodes reserved for databases.
+    nodeSelector:
+      node-role.kubernetes.io/postgres: ""
+    tolerations:
+      # Allow scheduling on the tainted database nodes.
+      - key: node-role.kubernetes.io/postgres
+        operator: Exists
+        effect: NoSchedule
+    # Spread the instances across different nodes.
+    enablePodAntiAffinity: true
+    topologyKey: topology.kubernetes.io/zone
+    podAntiAffinityType: required
+  postgresql:
+    # Require one synchronous standby before confirming a write.
+    synchronous:
+      method: any
+      number: 1
+
+    # Require mTLS for the schema owner and OpenBao runtime role.
+    pg_hba:
+      - hostssl openbao openbao all cert
+      - hostssl openbao openbao-rw all cert
+      - hostnossl openbao openbao all reject
+      - hostnossl openbao openbao-rw all reject
+    parameters:
+      # PostgreSQL settings for the local deployment.
+      max_connections: "100"
+      log_checkpoints: "on"
+      log_lock_waits: "on"
+      hot_standby_feedback: "on"
+      shared_memory_type: sysv
+      dynamic_shared_memory_type: sysv
+  storage:
+    # Storage for the local Kind deployment.
+    size: 2Gi
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: role-openbao
+spec:
+  # Owner role used by the schema-init Job.
+  cluster:
+    name: openbao-db
+  name: openbao
+  login: true
+  # Create a client certificate Secret for mTLS.
+  clientCertificate:
+    enabled: true
+  databaseRoleReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: role-openbao-rw
+spec:
+  # Restricted runtime role used by OpenBao.
+  cluster:
+    name: openbao-db
+  name: openbao-rw
+  login: true
+  # Create a client certificate Secret for OpenBao.
+  clientCertificate:
+    enabled: true
+  databaseRoleReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: openbao-db
+spec:
+  # Create the database and assign its owner role.
+  name: openbao
+  owner: openbao
+  cluster:
+    name: openbao-db

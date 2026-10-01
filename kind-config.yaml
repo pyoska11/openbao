@@ -1,0 +1,46 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+# Local cluster name used by deploy.sh and the kind-openbao kubectl context.
+name: openbao
+# Playground-compatible topology: one control plane, two general-purpose
+# workers, and three dedicated PostgreSQL workers.
+nodes:
+- role: control-plane
+- role: worker
+  labels:
+    infra.node.kubernetes.io:
+- role: worker
+  labels:
+    app.node.kubernetes.io:
+- role: worker
+  labels:
+    postgres.node.kubernetes.io:
+  # Keep general workloads off PostgreSQL nodes. CNPG resources add the
+  # matching toleration and node selector when scheduling database pods.
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      taints:
+      - key: node-role.kubernetes.io/postgres
+        effect: NoSchedule
+- role: worker
+  labels:
+    postgres.node.kubernetes.io:
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      taints:
+      - key: node-role.kubernetes.io/postgres
+        effect: NoSchedule
+- role: worker
+  labels:
+    postgres.node.kubernetes.io:
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      taints:
+      - key: node-role.kubernetes.io/postgres
+        effect: NoSchedule

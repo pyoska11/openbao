@@ -1,0 +1,86 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openbao-schema-init
+spec:
+  # The DDL is idempotent and the completed Job is disposable. Keeping it for
+  # five minutes leaves enough time to inspect its result during the demo.
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      # Retry transient PostgreSQL startup failures, but do not keep a failed
+      # schema migration running indefinitely.
+      restartPolicy: OnFailure
+      securityContext:
+        # Run psql as the non-root PostgreSQL image user and use the default
+        # seccomp profile for the one-shot administrative workload.
+        runAsNonRoot: true
+        runAsUser: 26
+        fsGroup: 26
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql-init
+          # This image supplies psql and is separate from the PostgreSQL
+          # server image selected by ClusterImageCatalog.
+          image: ghcr.io/cloudnative-pg/postgresql:18-minimal-trixie
+          securityContext:
+            # The Job only needs a TLS database connection and SQL; it does
+            # not need extra Linux privileges.
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          command:
+            - psql
+            # Connect as the schema owner through the CNPG RW service. The
+            # certificate and CA below make this a passwordless mTLS login.
+            - postgres://openbao@openbao-db-rw:5432/openbao?sslmode=verify-full&sslcert=/etc/certs/tls.crt&sslkey=/etc/certs/tls.key&sslrootcert=/etc/ca/ca.crt
+            - -v
+            - ON_ERROR_STOP=1
+            - -c
+            - |
+              -- OpenBao's PostgreSQL backend requires these two tables when
+              -- HA is enabled. The value column stores OpenBao-encrypted data.
+              CREATE TABLE IF NOT EXISTS openbao_kv_store (
+                parent_path TEXT NOT NULL,
+                path TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value BYTEA,
+                CONSTRAINT openbao_kv_store_pkey PRIMARY KEY (path, key)
+              );
+              CREATE INDEX IF NOT EXISTS openbao_kv_store_idx ON openbao_kv_store (parent_path);
+              -- The HA table stores the lock records used by OpenBao replicas.
+              CREATE TABLE IF NOT EXISTS openbao_ha_locks (
+                ha_key TEXT NOT NULL,
+                ha_identity TEXT NOT NULL,
+                ha_value TEXT,
+                valid_until TIMESTAMP WITH TIME ZONE NOT NULL,
+                CONSTRAINT openbao_ha_locks_pkey PRIMARY KEY (ha_key)
+              );
+              -- The runtime role receives only the DML needed by OpenBao.
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE openbao_kv_store, openbao_ha_locks TO "openbao-rw";
+              -- Remove default PUBLIC access, then grant back only what the
+              -- OpenBao runtime role needs to connect and use the schema.
+              REVOKE CONNECT ON DATABASE openbao FROM PUBLIC;
+              GRANT CONNECT ON DATABASE openbao TO "openbao-rw";
+              REVOKE ALL ON SCHEMA public FROM PUBLIC;
+              GRANT USAGE ON SCHEMA public TO "openbao-rw";
+          volumeMounts:
+            - name: certs
+              mountPath: /etc/certs
+              readOnly: true
+            - name: ca
+              mountPath: /etc/ca
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            # CNPG creates this certificate Secret from DatabaseRole
+            # role-openbao, the schema-owning database identity.
+            secretName: role-openbao-client-cert
+            defaultMode: 0640
+        - name: ca
+          secret:
+            # The cluster CA verifies the PostgreSQL server certificate.
+            secretName: openbao-db-ca
+            defaultMode: 0640
